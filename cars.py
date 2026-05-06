@@ -2,7 +2,7 @@
 
 Controles:
   Jugador 1 (rojo): flechas (Izq/Der carril, Arriba acelerar, Abajo frenar)
-  Jugador 2 (azul): A/D carril, W acelerar, S frenar
+  Jugador 2 (azul): IA — lo conduce el ordenador
   R: reiniciar    Esc: salir
 
 Gana el primero en llegar a 3000 m.
@@ -53,61 +53,95 @@ def lane_center(i: int) -> float:
 
 # ---------------------------------------------------------------- entidades
 class Car:
-    def __init__(self, color, lane, controls, name):
+    def __init__(self, color, lane, controls, name, ai=False):
         self.color = color
         self.name = name
         self.lane = lane
         self.target_lane = lane
         self.x = lane_center(lane)
         self.y = H - 120
+        self.base_y = self.y
         self.speed = 0.0          # px por "frame de referencia"
         self.max_speed = 11.0
+        self.min_speed = -4.0     # permite rebote hacia atrás
         self.accel = 0.08
         self.brake = 0.18
         self.drag = 0.02
         self.distance = 0.0       # metros
-        self.controls = controls  # dict: left, right, up, down -> pygame keys
-        self.crashed = False
-        self.crash_timer = 0.0
+        self.controls = controls  # dict: left, right, up, down -> pygame keys (None si IA)
+        self.ai = ai
+        self.bounce_timer = 0.0   # frames durante los que se ignora el control
+        self.invuln_timer = 0.0   # frames con inmunidad a colisiones
         self.finished = False
 
-    def update(self, dt, keys):
+    def request_inputs(self, keys, ai_decision):
+        """Devuelve (left, right, up, down) bool según humano o IA."""
+        if self.ai:
+            return ai_decision
+        c = self.controls
+        return (
+            bool(keys[c["left"]]),
+            bool(keys[c["right"]]),
+            bool(keys[c["up"]]),
+            bool(keys[c["down"]]),
+        )
+
+    def update(self, dt, keys, ai_decision=(False, False, True, False)):
         if self.finished:
             return
 
-        if self.crashed:
-            self.crash_timer -= dt
-            self.speed *= 0.92
-            if self.crash_timer <= 0:
-                self.crashed = False
-                self.speed = 2.0
+        if self.bounce_timer > 0:
+            self.bounce_timer -= dt
+        if self.invuln_timer > 0:
+            self.invuln_timer -= dt
+
+        left, right, up, down = self.request_inputs(keys, ai_decision)
+
+        # cambio de carril
+        if left and self.target_lane == self.lane and self.lane > 0:
+            self.target_lane = self.lane - 1
+        if right and self.target_lane == self.lane and self.lane < LANES - 1:
+            self.target_lane = self.lane + 1
+
+        tx = lane_center(self.target_lane)
+        dx = tx - self.x
+        move = math.copysign(min(abs(dx), 6.0 * dt), dx) if dx != 0 else 0
+        self.x += move
+        if abs(self.x - tx) < 1:
+            self.x = tx
+            self.lane = self.target_lane
+
+        if self.bounce_timer > 0:
+            # Durante el rebote la velocidad va recuperándose hacia 0 sola
+            self.speed += 0.18 * dt  # arrastre que devuelve la velocidad a 0
+            if self.speed > 0:
+                self.speed = max(0.0, self.speed - 0.05 * dt)
         else:
-            # cambio de carril (un paso por pulsación sostenida hasta llegar)
-            if keys[self.controls["left"]] and self.target_lane == self.lane and self.lane > 0:
-                self.target_lane = self.lane - 1
-            if keys[self.controls["right"]] and self.target_lane == self.lane and self.lane < LANES - 1:
-                self.target_lane = self.lane + 1
-
-            tx = lane_center(self.target_lane)
-            dx = tx - self.x
-            move = math.copysign(min(abs(dx), 6.0 * dt), dx) if dx != 0 else 0
-            self.x += move
-            if abs(self.x - tx) < 1:
-                self.x = tx
-                self.lane = self.target_lane
-
-            if keys[self.controls["up"]]:
+            if up:
                 self.speed += self.accel * dt
-            elif keys[self.controls["down"]]:
+            elif down:
                 self.speed -= self.brake * dt
             else:
                 self.speed -= self.drag * dt
-            self.speed = max(0.0, min(self.max_speed, self.speed))
+        self.speed = max(self.min_speed, min(self.max_speed, self.speed))
+
+        # Pequeño desplazamiento visual durante el rebote
+        if self.bounce_timer > 0:
+            self.y = self.base_y + min(20, self.bounce_timer * 0.6)
+        else:
+            self.y = self.base_y
 
         self.distance += self.speed * dt * 0.5
+        self.distance = max(0.0, self.distance)
         if self.distance >= FINISH_DISTANCE:
             self.distance = FINISH_DISTANCE
             self.finished = True
+
+    def bounce_back(self):
+        """Provoca un rebote hacia atrás tras chocar con tráfico."""
+        self.speed = -3.5
+        self.bounce_timer = 22.0
+        self.invuln_timer = 35.0
 
 
 class TrafficCar:
@@ -138,14 +172,12 @@ class Game:
             "left": pygame.K_LEFT, "right": pygame.K_RIGHT,
             "up": pygame.K_UP, "down": pygame.K_DOWN,
         }, "Jugador 1")
-        self.p2 = Car(BLUE, 2, {
-            "left": pygame.K_a, "right": pygame.K_d,
-            "up": pygame.K_w, "down": pygame.K_s,
-        }, "Jugador 2")
+        self.p2 = Car(BLUE, 2, None, "CPU", ai=True)
         self.traffic = []
         self.spawn_timer = 0.0
         self.road_offset = 0.0
         self.winner = None
+        self.ai_lane_cooldown = 0.0
 
     # ------------------------------------------------------- lógica
     def spawn_traffic(self):
@@ -158,28 +190,78 @@ class Game:
         return abs(ax - bx) < CAR_W and abs(ay - by) < CAR_H
 
     def check_collisions(self):
+        # Solo colisiones jugador <-> tráfico. Los dos jugadores pueden cruzarse.
         for p in (self.p1, self.p2):
-            if p.crashed or p.finished:
+            if p.finished or p.invuln_timer > 0:
                 continue
-            for t in self.traffic:
+            for t in list(self.traffic):
                 if self.rects_overlap(p.x, p.y, t.x, t.y):
-                    p.crashed = True
-                    p.crash_timer = 60.0
-                    p.speed = 0
+                    p.bounce_back()
+                    # Apartar el coche de tráfico hacia adelante para que no se quede pegado
+                    t.y = p.y + CAR_H + 6
                     break
 
-        if not (self.p1.crashed or self.p2.crashed or self.p1.finished or self.p2.finished):
-            if self.rects_overlap(self.p1.x, self.p1.y, self.p2.x, self.p2.y):
-                self.p1.crashed = self.p2.crashed = True
-                self.p1.crash_timer = self.p2.crash_timer = 50.0
-                self.p1.speed = self.p2.speed = 0
+    # ---------------- IA ----------------
+    def ai_decide(self, car, dt):
+        """Devuelve (left, right, up, down) para un coche IA."""
+        # Cooldown entre cambios de carril
+        self.ai_lane_cooldown -= dt
+        # Acelerar siempre por defecto
+        up, down = True, False
+
+        # Solo decide cambio de carril cuando ya está alineado
+        if car.target_lane != car.lane or self.ai_lane_cooldown > 0:
+            return (False, False, up, down)
+
+        # Calcula la distancia al obstáculo más cercano por delante en cada carril
+        def gap_in_lane(lane):
+            best = float("inf")
+            for t in self.traffic:
+                if t.lane != lane:
+                    continue
+                # delante del coche
+                dy = car.y - t.y
+                if dy > 0:
+                    best = min(best, dy)
+            return best
+
+        cur_gap = gap_in_lane(car.lane)
+        # Si hay espacio cómodo, sigue acelerando
+        if cur_gap > 220:
+            return (False, False, up, down)
+
+        # Buscar mejor carril adyacente
+        candidates = [(car.lane, cur_gap)]
+        if car.lane > 0:
+            candidates.append((car.lane - 1, gap_in_lane(car.lane - 1)))
+        if car.lane < LANES - 1:
+            candidates.append((car.lane + 1, gap_in_lane(car.lane + 1)))
+        # Necesita un margen mínimo en el carril objetivo para considerar el cambio
+        candidates.sort(key=lambda x: -x[1])
+        best_lane, best_gap = candidates[0]
+
+        left = right = False
+        if best_lane != car.lane and best_gap > cur_gap + 80:
+            if best_lane < car.lane:
+                left = True
+            else:
+                right = True
+            self.ai_lane_cooldown = 18.0
+
+        # Si el obstáculo está muy cerca y no puede cambiar, frena un poco
+        if cur_gap < 110 and best_lane == car.lane:
+            up = False
+            down = True
+
+        return (left, right, up, down)
 
     def update(self, dt):
         keys = pygame.key.get_pressed()
+        ai2 = self.ai_decide(self.p2, dt) if self.p2.ai else (False, False, True, False)
         self.p1.update(dt, keys)
-        self.p2.update(dt, keys)
+        self.p2.update(dt, keys, ai_decision=ai2)
 
-        ref_speed = max(self.p1.speed, self.p2.speed)
+        ref_speed = max(0.0, max(self.p1.speed, self.p2.speed))
         self.road_offset = (self.road_offset + ref_speed * dt) % 44
 
         for t in self.traffic:
@@ -277,11 +359,11 @@ class Game:
         pygame.draw.rect(self.screen, (255, 255, 255), (bar_x + bar_w - 2, bar_y - 4, 2, bar_h + 8))
 
     def draw_hud(self):
-        p1_text = f"P1 (Rojo)  {int(self.p1.distance)} m   {int(self.p1.speed * 22)} km/h"
-        p2_text = f"P2 (Azul)  {int(self.p2.distance)} m   {int(self.p2.speed * 22)} km/h"
+        p1_text = f"P1 (Rojo)  {int(self.p1.distance)} m   {int(max(0, self.p1.speed) * 22)} km/h"
+        p2_text = f"CPU (Azul) {int(self.p2.distance)} m   {int(max(0, self.p2.speed) * 22)} km/h"
         self.screen.blit(self.font.render(p1_text, True, RED), (12, H - 50))
         self.screen.blit(self.font.render(p2_text, True, BLUE), (12, H - 28))
-        help_text = "P1: Flechas   P2: WASD   R: reiniciar   Esc: salir"
+        help_text = "P1: Flechas    R: reiniciar    Esc: salir"
         surf = self.font_small.render(help_text, True, SUBTEXT)
         self.screen.blit(surf, (W - surf.get_width() - 12, H - 22))
 
@@ -300,8 +382,8 @@ class Game:
         self.draw_road()
         for t in self.traffic:
             self.draw_car(t.x, t.y, t.color)
-        self.draw_car(self.p1.x, self.p1.y, self.p1.color, self.p1.crashed)
-        self.draw_car(self.p2.x, self.p2.y, self.p2.color, self.p2.crashed)
+        self.draw_car(self.p1.x, self.p1.y, self.p1.color, self.p1.bounce_timer > 0)
+        self.draw_car(self.p2.x, self.p2.y, self.p2.color, self.p2.bounce_timer > 0)
         self.draw_progress()
         self.draw_hud()
 
@@ -312,7 +394,7 @@ class Game:
                 "Pulsa ESPACIO para empezar",
             )
         elif self.state == "finished" and self.winner:
-            name = "Jugador 1 (Rojo)" if self.winner is self.p1 else "Jugador 2 (Azul)"
+            name = "Jugador 1 (Rojo)" if self.winner is self.p1 else "CPU (Azul)"
             self.draw_overlay(
                 f"¡{name} gana!",
                 f"P1: {int(self.p1.distance)} m    P2: {int(self.p2.distance)} m",
