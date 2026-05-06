@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Carrera de Dos Coches - 4 Carriles</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #111;
+    color: #eee;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    gap: 10px;
+  }
+  canvas {
+    background: #2a2a2a;
+    border: 2px solid #444;
+    box-shadow: 0 0 30px rgba(0,0,0,0.6);
+    display: block;
+  }
+  #hud {
+    display: flex;
+    justify-content: space-between;
+    width: 600px;
+    font-size: 14px;
+  }
+  .panel {
+    background: #1c1c1c;
+    border: 1px solid #333;
+    padding: 8px 12px;
+    border-radius: 6px;
+    min-width: 220px;
+  }
+  .p1 { color: #ff5050; }
+  .p2 { color: #50a8ff; }
+  #help {
+    font-size: 12px;
+    color: #888;
+    text-align: center;
+    max-width: 600px;
+  }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 14px;
+    z-index: 10;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h1 { margin: 0; font-size: 32px; }
+  #overlay button {
+    padding: 10px 22px;
+    font-size: 16px;
+    background: #2d8cff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #overlay button:hover { background: #1f7be6; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <div class="panel p1">
+      <strong>Jugador 1 (Rojo)</strong><br>
+      Distancia: <span id="d1">0</span> m &nbsp; Velocidad: <span id="s1">0</span> km/h
+    </div>
+    <div class="panel p2">
+      <strong>Jugador 2 (Azul)</strong><br>
+      Distancia: <span id="d2">0</span> m &nbsp; Velocidad: <span id="s2">0</span> km/h
+    </div>
+  </div>
+  <canvas id="game" width="600" height="700"></canvas>
+  <div id="help">
+    Jugador 1: <b>Flechas</b> (← → para cambiar de carril, ↑ acelerar, ↓ frenar) &nbsp;|&nbsp;
+    Jugador 2: <b>WASD</b> (A/D carril, W acelerar, S frenar) &nbsp;|&nbsp;
+    <b>R</b> reiniciar &nbsp;|&nbsp; Esquiva el tráfico. ¡El primero en 3000 m gana!
+  </div>
+</div>
+
+<div id="overlay">
+  <h1 id="overlay-title">Carrera de Dos Coches</h1>
+  <p id="overlay-msg">4 carriles, mucho tráfico, un ganador.</p>
+  <button id="startBtn">Empezar</button>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  const H = canvas.height;
+
+  const LANES = 4;
+  const ROAD_LEFT = 60;
+  const ROAD_RIGHT = W - 60;
+  const ROAD_WIDTH = ROAD_RIGHT - ROAD_LEFT;
+  const LANE_WIDTH = ROAD_WIDTH / LANES;
+  const laneCenter = i => ROAD_LEFT + LANE_WIDTH * (i + 0.5);
+
+  const FINISH_DISTANCE = 3000;
+
+  const CAR_W = 38;
+  const CAR_H = 64;
+
+  function makePlayer(color, lane, controls, name) {
+    return {
+      color,
+      name,
+      lane,
+      targetLane: lane,
+      x: laneCenter(lane),
+      y: H - 120,
+      speed: 0,        // px/frame, internal
+      maxSpeed: 11,
+      accel: 0.08,
+      brake: 0.18,
+      drag: 0.02,
+      distance: 0,     // meters
+      controls,
+      crashed: false,
+      crashTimer: 0,
+      finished: false,
+    };
+  }
+
+  let p1, p2, traffic, roadOffset, lastTime, running, winner, started;
+
+  function reset() {
+    p1 = makePlayer('#ff5050', 1, {
+      left: 'ArrowLeft', right: 'ArrowRight',
+      up: 'ArrowUp', down: 'ArrowDown'
+    }, 'Jugador 1');
+    p2 = makePlayer('#50a8ff', 2, {
+      left: 'KeyA', right: 'KeyD',
+      up: 'KeyW', down: 'KeyS'
+    }, 'Jugador 2');
+    traffic = [];
+    roadOffset = 0;
+    lastTime = performance.now();
+    running = true;
+    winner = null;
+    spawnTimer = 0;
+  }
+
+  let spawnTimer = 0;
+  function spawnTraffic() {
+    // Don't spawn near a player's lane top to keep fair
+    const lane = Math.floor(Math.random() * LANES);
+    const speed = 2 + Math.random() * 3;  // slower than max
+    const car = {
+      lane,
+      x: laneCenter(lane),
+      y: -CAR_H - 20,
+      speed,
+      color: ['#e0c040', '#9a4ad6', '#3fbf6f', '#d96b1f', '#cccccc'][Math.floor(Math.random()*5)],
+      worldY: 0,  // not used, we move relative
+    };
+    // avoid spawning if there is another car in same lane very close at top
+    const tooClose = traffic.some(t => t.lane === lane && t.y < 80);
+    if (!tooClose) traffic.push(car);
+  }
+
+  const keys = new Set();
+  window.addEventListener('keydown', e => {
+    keys.add(e.code);
+    if (e.code === 'KeyR') { reset(); hideOverlay(); }
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) e.preventDefault();
+  });
+  window.addEventListener('keyup', e => keys.delete(e.code));
+
+  function updatePlayer(p, dt) {
+    if (p.finished) return;
+
+    if (p.crashed) {
+      p.crashTimer -= dt;
+      p.speed *= 0.92;
+      if (p.crashTimer <= 0) {
+        p.crashed = false;
+        p.speed = 2;
+      }
+    } else {
+      // Lane changes
+      if (keys.has(p.controls.left) && p.targetLane === p.lane && p.lane > 0) {
+        p.targetLane = p.lane - 1;
+      }
+      if (keys.has(p.controls.right) && p.targetLane === p.lane && p.lane < LANES - 1) {
+        p.targetLane = p.lane + 1;
+      }
+      // Smooth lane transition
+      const tx = laneCenter(p.targetLane);
+      const dx = tx - p.x;
+      const move = Math.sign(dx) * Math.min(Math.abs(dx), 6);
+      p.x += move;
+      if (Math.abs(p.x - tx) < 1) {
+        p.x = tx;
+        p.lane = p.targetLane;
+      }
+
+      // Throttle / brake
+      if (keys.has(p.controls.up)) {
+        p.speed += p.accel * dt;
+      } else if (keys.has(p.controls.down)) {
+        p.speed -= p.brake * dt;
+      } else {
+        p.speed -= p.drag * dt;
+      }
+      p.speed = Math.max(0, Math.min(p.maxSpeed, p.speed));
+    }
+
+    // Distance accumulation (1 px ~ 0.5 m visual, scale to make it feel like a road)
+    p.distance += p.speed * dt * 0.5;
+
+    if (p.distance >= FINISH_DISTANCE) {
+      p.distance = FINISH_DISTANCE;
+      p.finished = true;
+      if (!winner) winner = p;
+    }
+  }
+
+  function rectsOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+    return Math.abs(ax - bx) < (aw + bw) / 2 && Math.abs(ay - by) < (ah + bh) / 2;
+  }
+
+  function checkCollisions() {
+    const players = [p1, p2];
+    // Player vs traffic
+    for (const p of players) {
+      if (p.crashed || p.finished) continue;
+      for (const t of traffic) {
+        if (rectsOverlap(p.x, p.y, CAR_W, CAR_H, t.x, t.y, CAR_W, CAR_H)) {
+          p.crashed = true;
+          p.crashTimer = 60; // ~1 sec
+          p.speed = 0;
+          break;
+        }
+      }
+    }
+    // Player vs player
+    if (!p1.crashed && !p2.crashed && !p1.finished && !p2.finished) {
+      if (rectsOverlap(p1.x, p1.y, CAR_W, CAR_H, p2.x, p2.y, CAR_W, CAR_H)) {
+        p1.crashed = p2.crashed = true;
+        p1.crashTimer = p2.crashTimer = 50;
+        p1.speed = p2.speed = 0;
+      }
+    }
+  }
+
+  function update(dt) {
+    updatePlayer(p1, dt);
+    updatePlayer(p2, dt);
+
+    // The "world" scrolls relative to a reference speed (avg of players), so traffic appears to move down
+    const refSpeed = Math.max(p1.speed, p2.speed);
+    roadOffset = (roadOffset + refSpeed * dt) % 40;
+
+    // Move traffic relative to each player. Simpler: move traffic down by refSpeed - their own speed
+    // We'll model traffic as moving down at (refSpeed - traffic.speed) on screen.
+    for (const t of traffic) {
+      t.y += (refSpeed - t.speed) * dt;
+    }
+    // remove off-screen
+    traffic = traffic.filter(t => t.y < H + 100);
+
+    // Spawn
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      spawnTraffic();
+      spawnTimer = 25 + Math.random() * 30;  // frames
+    }
+
+    checkCollisions();
+
+    if (p1.finished && p2.finished) running = false;
+    // If one finishes and the other has crashed and is way behind, end after some time? Keep playing until both done.
+  }
+
+  function drawRoad() {
+    // grass
+    ctx.fillStyle = '#1f5e2a';
+    ctx.fillRect(0, 0, ROAD_LEFT, H);
+    ctx.fillRect(ROAD_RIGHT, 0, W - ROAD_RIGHT, H);
+
+    // road
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(ROAD_LEFT, 0, ROAD_WIDTH, H);
+
+    // shoulders
+    ctx.fillStyle = '#e8e8e8';
+    ctx.fillRect(ROAD_LEFT - 4, 0, 4, H);
+    ctx.fillRect(ROAD_RIGHT, 0, 4, H);
+
+    // lane dashes
+    ctx.strokeStyle = '#f5f5f5';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([24, 20]);
+    for (let i = 1; i < LANES; i++) {
+      const x = ROAD_LEFT + LANE_WIDTH * i;
+      ctx.lineDashOffset = -roadOffset;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, H);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // roadside posts (parallax)
+    ctx.fillStyle = '#bbb';
+    const postSpacing = 80;
+    for (let y = (roadOffset * 2) % postSpacing - postSpacing; y < H; y += postSpacing) {
+      ctx.fillRect(ROAD_LEFT - 14, y, 6, 14);
+      ctx.fillRect(ROAD_RIGHT + 8, y, 6, 14);
+    }
+  }
+
+  function drawCar(x, y, color, crashed) {
+    ctx.save();
+    ctx.translate(x, y);
+
+    // shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.35)';
+    ctx.fillRect(-CAR_W/2 + 3, -CAR_H/2 + 5, CAR_W, CAR_H);
+
+    // body
+    ctx.fillStyle = color;
+    roundRect(ctx, -CAR_W/2, -CAR_H/2, CAR_W, CAR_H, 6);
+    ctx.fill();
+
+    // windshield
+    ctx.fillStyle = 'rgba(20,30,50,0.85)';
+    roundRect(ctx, -CAR_W/2 + 5, -CAR_H/2 + 8, CAR_W - 10, 18, 3);
+    ctx.fill();
+    roundRect(ctx, -CAR_W/2 + 5, CAR_H/2 - 22, CAR_W - 10, 14, 3);
+    ctx.fill();
+
+    // wheels
+    ctx.fillStyle = '#111';
+    ctx.fillRect(-CAR_W/2 - 3, -CAR_H/2 + 6, 5, 14);
+    ctx.fillRect(CAR_W/2 - 2, -CAR_H/2 + 6, 5, 14);
+    ctx.fillRect(-CAR_W/2 - 3, CAR_H/2 - 20, 5, 14);
+    ctx.fillRect(CAR_W/2 - 2, CAR_H/2 - 20, 5, 14);
+
+    // headlights
+    ctx.fillStyle = '#fff7b0';
+    ctx.fillRect(-CAR_W/2 + 4, -CAR_H/2 + 1, 8, 4);
+    ctx.fillRect(CAR_W/2 - 12, -CAR_H/2 + 1, 8, 4);
+
+    if (crashed) {
+      // smoke puff
+      ctx.fillStyle = 'rgba(200,80,40,0.7)';
+      ctx.beginPath();
+      ctx.arc(0, -CAR_H/2 - 6, 8 + Math.sin(performance.now()/60)*2, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function drawProgress() {
+    // Mini progress bar at top
+    const barX = ROAD_LEFT;
+    const barY = 12;
+    const barW = ROAD_WIDTH;
+    const barH = 8;
+    ctx.fillStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillRect(barX, barY, barW, barH);
+
+    const f1 = p1.distance / FINISH_DISTANCE;
+    const f2 = p2.distance / FINISH_DISTANCE;
+
+    ctx.fillStyle = '#ff5050';
+    ctx.fillRect(barX, barY, barW * f1, barH/2);
+    ctx.fillStyle = '#50a8ff';
+    ctx.fillRect(barX, barY + barH/2, barW * f2, barH/2);
+
+    // finish flag at the right
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(barX + barW - 2, barY - 4, 2, barH + 8);
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, W, H);
+    drawRoad();
+
+    // traffic
+    for (const t of traffic) drawCar(t.x, t.y, t.color, false);
+
+    // players
+    drawCar(p1.x, p1.y, p1.color, p1.crashed);
+    drawCar(p2.x, p2.y, p2.color, p2.crashed);
+
+    drawProgress();
+  }
+
+  function updateHUD() {
+    document.getElementById('d1').textContent = Math.floor(p1.distance);
+    document.getElementById('d2').textContent = Math.floor(p2.distance);
+    document.getElementById('s1').textContent = Math.floor(p1.speed * 22);
+    document.getElementById('s2').textContent = Math.floor(p2.speed * 22);
+  }
+
+  const overlay = document.getElementById('overlay');
+  const overlayTitle = document.getElementById('overlay-title');
+  const overlayMsg = document.getElementById('overlay-msg');
+  const startBtn = document.getElementById('startBtn');
+
+  function showOverlay(title, msg, btnText='Reiniciar') {
+    overlayTitle.textContent = title;
+    overlayMsg.textContent = msg;
+    startBtn.textContent = btnText;
+    overlay.classList.remove('hidden');
+  }
+  function hideOverlay() { overlay.classList.add('hidden'); }
+
+  startBtn.addEventListener('click', () => {
+    reset();
+    hideOverlay();
+  });
+
+  function loop(now) {
+    const dt = Math.min(2, (now - lastTime) / 16.67);  // normalize to ~60fps frames
+    lastTime = now;
+
+    if (running) {
+      update(dt);
+      updateHUD();
+    } else if (winner) {
+      // show overlay once
+      if (!overlay.classList.contains('hidden')) {
+        // already shown
+      } else {
+        const w = winner === p1 ? 'Jugador 1 (Rojo)' : 'Jugador 2 (Azul)';
+        showOverlay('¡' + w + ' gana!',
+          `Distancias: P1 ${Math.floor(p1.distance)} m, P2 ${Math.floor(p2.distance)} m`,
+          'Jugar de nuevo');
+      }
+    }
+
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  // Initial state
+  reset();
+  running = false;
+  showOverlay('Carrera de Dos Coches',
+    '4 carriles, mucho tráfico, un ganador. Pulsa Empezar.',
+    'Empezar');
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
