@@ -257,22 +257,23 @@ class Game:
         if self.winner is not None:
             return
         if self.mode == "Carrera":
-            if self.p1.distance >= FINISH_DISTANCE and not self.p1.finished:
+            # Solo se gana cruzando la meta. Un coche eliminado deja de correr,
+            # pero el otro tiene que llegar a la meta para ganar.
+            if self.p1.alive and self.p1.distance >= FINISH_DISTANCE and not self.p1.finished:
                 self.p1.finished = True
-            if self.p2.distance >= FINISH_DISTANCE and not self.p2.finished:
+            if self.p2.alive and self.p2.distance >= FINISH_DISTANCE and not self.p2.finished:
                 self.p2.finished = True
-            if not self.p1.alive and not self.p2.alive:
-                self._end(winner=None, reason="Eliminados")
-            elif self.p1.finished and self.p2.finished:
+
+            if self.p1.finished and self.p2.finished:
+                # cruzaron en el mismo frame: gana el que esté más adelantado
                 self._end(winner=self.p1 if self.p1.distance >= self.p2.distance else self.p2)
             elif self.p1.finished:
                 self._end(winner=self.p1)
             elif self.p2.finished:
                 self._end(winner=self.p2)
-            elif not self.p1.alive:
-                self._end(winner=self.p2, reason="Sin vidas")
-            elif not self.p2.alive:
-                self._end(winner=self.p1, reason="CPU sin vidas")
+            elif not self.p1.alive and not self.p2.alive:
+                # nadie puede llegar ya
+                self._end(winner=None, reason="Nadie llegó a la meta")
         elif self.mode == "Contrarreloj":
             if self.time_limit <= 0 or not self.p1.alive:
                 w = self.p1 if self.p1.distance >= self.p2.distance else self.p2

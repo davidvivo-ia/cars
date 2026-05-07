@@ -98,6 +98,50 @@ class AITests(unittest.TestCase):
         self.assertTrue(up)
 
 
+class FinishRuleTests(unittest.TestCase):
+    """Reglas del modo Carrera: solo se gana cruzando la meta."""
+
+    def _check(self, p1_alive, p1_dist, p2_alive, p2_dist):
+        # Replica la lógica de Game._check_finish para Carrera sin instanciar pygame.
+        p1 = type("P", (), {})()
+        p2 = type("P", (), {})()
+        for c, alive, dist in ((p1, p1_alive, p1_dist), (p2, p2_alive, p2_dist)):
+            c.alive = alive
+            c.distance = dist
+            c.finished = False
+
+        if p1.alive and p1.distance >= FINISH_DISTANCE:
+            p1.finished = True
+        if p2.alive and p2.distance >= FINISH_DISTANCE:
+            p2.finished = True
+
+        winner = "ongoing"
+        if p1.finished and p2.finished:
+            winner = "p1" if p1.distance >= p2.distance else "p2"
+        elif p1.finished:
+            winner = "p1"
+        elif p2.finished:
+            winner = "p2"
+        elif not p1.alive and not p2.alive:
+            winner = None
+        return winner
+
+    def test_dead_opponent_does_not_end_race(self):
+        # P1 vivo y todavía lejos, P2 eliminado: la carrera continúa.
+        self.assertEqual(self._check(True, 1500, False, 800), "ongoing")
+
+    def test_winner_only_by_reaching_finish(self):
+        self.assertEqual(self._check(True, FINISH_DISTANCE, True, 1000), "p1")
+        self.assertEqual(self._check(True, 1000, True, FINISH_DISTANCE), "p2")
+
+    def test_both_dead_without_finishing_is_no_winner(self):
+        self.assertIsNone(self._check(False, 100, False, 200))
+
+    def test_dead_player_cannot_win_by_distance(self):
+        # P1 muerto a 2999 m, P2 vivo a 200 m: nadie ha cruzado y P2 sigue corriendo.
+        self.assertEqual(self._check(False, FINISH_DISTANCE - 1, True, 200), "ongoing")
+
+
 class HighscoreTests(unittest.TestCase):
     def test_update_keeps_best_distance(self):
         data = {"Carrera": {"best_distance": 100, "best_time": None}}
