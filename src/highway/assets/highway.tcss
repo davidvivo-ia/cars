@@ -1,0 +1,56 @@
+/* Road Racer 2026 — Textual stylesheet */
+
+Screen {
+    background: #0e1014;
+    color: #f4f4f5;
+}
+
+#title-bar {
+    height: 3;
+    padding: 1 2;
+    color: #ffcc00;
+    text-style: bold;
+}
+
+#status-line {
+    dock: bottom;
+    height: 3;
+    background: #1a1d24;
+    color: #f4f4f5;
+    padding: 1 2;
+    border-top: solid #3a3f4a;
+}
+
+#playfield {
+    align: center middle;
+    border: round #3a3f4a;
+    width: auto;
+    height: auto;
+    padding: 0 1;
+    background: #0e1014;
+}
+
+#overlay {
+    align: center middle;
+    background: rgba(0, 0, 0, 0.75);
+    color: #f4f4f5;
+    text-align: center;
+    width: 60;
+    height: 11;
+    border: heavy #ffcc00;
+}
+
+#overlay > .title {
+    color: #ffcc00;
+    text-style: bold;
+}
+
+#overlay > .subtitle {
+    color: #ff8a3d;
+}
+
+#scoreboard {
+    border: round #33ff66;
+    padding: 1 2;
+    width: 60;
+}
