@@ -1,0 +1,80 @@
+   1 REM ************************
+   2 REM *      ROAD RACER      *
+   3 REM *  4 carriles - dodge  *
+   4 REM *   Sinclair BASIC     *
+   5 REM *      ZX Spectrum 48K *
+   6 REM ************************
+   7 REM Reconstruccion al estilo
+   8 REM type-in de revista, 1983
+  10 BORDER 0: PAPER 0: INK 7: CLS
+  20 GO SUB 9000
+  30 LET hi=0
+ 100 REM --- iniciar partida ---
+ 110 LET sc=0: LET lv=3: LET sp=4
+ 120 LET cl=2
+ 130 DIM o(4)
+ 140 FOR i=1 TO 4: LET o(i)=-INT (RND*20): NEXT i
+ 150 RANDOMIZE
+ 200 REM --- bucle ---
+ 210 PAPER 0: INK 7: CLS
+ 220 GO SUB 8000
+ 230 IF lv=0 THEN GO TO 5000
+ 240 GO SUB 1000
+ 250 GO SUB 2000
+ 260 GO SUB 3000
+ 270 GO SUB 4000
+ 280 LET sc=sc+sp
+ 290 IF sc/200=INT (sc/200) THEN LET sp=sp+1
+ 300 GO TO 230
+1000 REM --- entrada teclado ---
+1010 LET k$=INKEY$
+1020 IF k$="o" AND cl>1 THEN LET cl=cl-1: BEEP .01,5
+1030 IF k$="p" AND cl<4 THEN LET cl=cl+1: BEEP .01,7
+1040 RETURN
+2000 REM --- mover obstaculos ---
+2010 FOR i=1 TO 4
+2020 LET o(i)=o(i)+sp/2
+2030 IF o(i)>20 THEN LET o(i)=-INT (RND*25)-2
+2040 NEXT i
+2050 RETURN
+3000 REM --- colision ---
+3010 IF INT (o(cl))=19 THEN GO SUB 7000
+3020 RETURN
+4000 REM --- render ---
+4010 FOR i=1 TO 4
+4020 LET y=INT (o(i))
+4030 IF y>=0 AND y<=20 THEN PRINT AT y,(i-1)*7+5;INK 6;"@"
+4040 NEXT i
+4050 PRINT AT 20,(cl-1)*7+5;INK 5;"#"
+4060 PRINT AT 21,0;INK 7;"PT ";sc;" VID ";lv;" VEL ";sp;" REC ";hi
+4070 RETURN
+5000 REM --- game over ---
+5010 CLS: PRINT AT 10,11;FLASH 1;INK 2;"GAME OVER"
+5020 PRINT AT 12,9;FLASH 0;INK 7;"PUNTOS: ";sc
+5030 IF sc>hi THEN LET hi=sc: PRINT AT 14,8;INK 6;"NUEVO RECORD!"
+5040 PRINT AT 18,8;"PULSA UNA TECLA"
+5050 IF INKEY$="" THEN GO TO 5050
+5060 GO TO 100
+7000 REM --- choque ---
+7010 BEEP .1,-20: BEEP .1,-25
+7020 BORDER 2: PAUSE 5: BORDER 0
+7030 LET lv=lv-1
+7040 FOR i=1 TO 4: LET o(i)=-INT (RND*30)-5: NEXT i
+7050 RETURN
+8000 REM --- marco carretera ---
+8010 FOR y=0 TO 20
+8020 PRINT AT y,3;INK 7;"|"
+8030 PRINT AT y,31;INK 7;"|"
+8040 IF y=INT (y/2)*2 THEN PRINT AT y,11;".": PRINT AT y,18;".": PRINT AT y,25;"."
+8050 NEXT y
+8060 RETURN
+9000 REM --- intro ---
+9010 CLS
+9020 PRINT AT 3,11;FLASH 1;INK 5;"ROAD RACER"
+9030 PRINT AT 5,11;FLASH 0;INK 7;"=========="
+9040 PRINT AT 8,2;"4 CARRILES, MUCHOS OBSTACULOS"
+9050 PRINT AT 10,3;"O = IZQUIERDA   P = DERECHA"
+9060 PRINT AT 12,5;"ESQUIVA PARA SOBREVIVIR"
+9070 PRINT AT 18,8;FLASH 1;"PULSA UNA TECLA"
+9080 IF INKEY$="" THEN GO TO 9080
+9090 RETURN
